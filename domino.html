@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>ドミノ倒し</title>
+<script src="three.js"></script>
+<script src="cannon.js"></script>
+<script>
+let scene, camera, renderer;        //シーン、カメラ、レンダラー
+let width, height;                  //幅、高さ
+let world;                          //物理ワールド
+let dBox, pBox, dMat, pMat;         //ドミノ用形状、マテリアル
+const dominos = new Array();        //ドミノ（表示用）
+const pDominos = new Array();       //ドミノ（物理用）
+let h = 5, angle = 0, cnt = 0;      //カメラの高さ、角度、カウンタ
+
+const init = () => {
+    //画面サイズを取得（幅と高さを補正）
+    width = window.innerWidth - 20;
+    height = window.innerHeight - 120;
+    //シーン
+    scene = new THREE.Scene();
+    //カメラ（画角：50、ニアクリップ：1、ファークリップ：100）
+    camera = new THREE.PerspectiveCamera(50, width/height, 1, 100);
+    camera.position.set(10 * Math.cos(angle), h, 10 * Math.sin(angle)); //カメラの位置(10, 5, 0)
+    camera.lookAt(scene.position);  //カメラは原点を向く
+    //レンダラー
+    renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setSize(width, height);
+    renderer.shadowMap.enabled = true;
+    document.getElementById("renderArea").appendChild(renderer.domElement); //描画エリアに作成
+    //ライト（平行光源、環境光）
+    const light = new THREE.DirectionalLight("#FFFFFF");                    //白色の平行光源
+    light.position.set(10, 20, 10);
+    light.castShadow = true;            //影を落とす
+    light.shadow.camera.top = 10;       //影の描画範囲を広くする
+    light.shadow.camera.bottom = -10;
+    light.shadow.camera.left = -10;
+    light.shadow.camera.right = 10;
+    light.shadow.mapSize.width = 2048;  //影の描画を細かくする
+    light.shadow.camera.height = 2048;
+    scene.add(light);
+    const ambientLight = new THREE.AmbientLight("#666666"); //グレーの環境光
+    scene.add(ambientLight);
+    //床（表示用）
+    const geometry = new THREE.BoxGeometry(16, 1, 16);      //床は直方体
+    const material = new THREE.MeshLambertMaterial({color:"#CCCC99"}); //床の色は薄黄色
+    const plane = new THREE.Mesh(geometry, material);
+    plane.name = "plane";
+    plane.receiveShadow = true;                             //床は影を受ける
+    scene.add(plane);
+    //物理ワールドの設定
+    world = new CANNON.World();
+    world.gravity.set(0, -9.8, 0);                         //重力加速度を設定
+    world.broadphase = new CANNON.NaiveBroadphase();
+    world.allowSleep = true;                                //物体が動かないようにする
+    //床（物理用）
+    const pPlane = new CANNON.Body({mass:0});               //床は重力の影響を受けない
+    pPlane.addShape(new CANNON.Box(new CANNON.Vec3(8, 0.5, 8)));   //物理ワールドに床を作成
+    world.addBody(pPlane);
+    //ドミノ（表示用、物理用）の形状、マテリアル、摩擦をセット
+    dBox = new THREE.BoxGeometry(0.2, 1.6, 0.8);            //ドミノを直方体で作成
+    pBox = new CANNON.Box(new CANNON.Vec3(0.1, 0.8, 0.4));
+    dMat = new THREE.MeshPhongMaterial({color:"#3333CC", shininess:100});   //ドミノの色は青
+    pMat = new CANNON.Material();
+    const mat = new CANNON.ContactMaterial(pMat, pMat, {friction:0.01});    //ドミノ同士の摩擦は0.01
+    world.addContactMaterial(mat);
+    //キー、マウスイベントの登録
+    document.addEventListener("keydown", moveCamera);
+    renderer.domElement.addEventListener("click", setDomino);
+    renderer.domElement.addEventListener("contextmenu", removeDomino);
+    //物理ワールドの更新＋描画
+    update();  
+}
+
+const update = () => {
+    //物理ワールドの更新
+    world.step(1/60);       //60分の1ごとに物理ワールドを更新
+    for (key in dominos) {
+        dominos[key].position.copy(pDominos[key].position);     //物理ワールドのドミノの位置と角度を3D空間にコピー
+        dominos[key].quaternion.copy(pDominos[key].quaternion);
+    }
+    //描画
+    renderer.render(scene, camera);
+    window.requestAnimationFrame(update);   //アニメーションを行う
+}
+
+const moveCamera = event => {
+    //方向キーが押された（カメラの位置を変更）
+    if(event.key == "ArrowUp") h += 0.5;        //上キーでカメラを上げる
+    if(event.key == "ArrowDown") h -= 0.5;      //下キーでカメラを下げる
+    if(event.key == "ArrowLeft") angle += 10 * Math.PI / 180;   //左右キーでカメラを10度ずつ回転
+    if(event.key == "ArrowRight") angle -= 10 * Math.PI / 180;
+    camera.position.set(10 * Math.cos(angle), h, 10 * Math.sin(angle)); //新しいカメラ位置をセット
+    camera.lookAt(scene.position);
+}
+
+const setDomino = event => {    //画面をクリックしたとき
+    //左クリック（ドミノを追加／ドミノを倒す）
+    const intersectObject = getIntersectObject(event);      //クリックした位置に物体があるか探す
+    if (intersectObject != undefined) {                     //物体が床だったとき
+       if (intersectObject.object.name == "plane") {
+           //ドミノ（表示用）を追加
+           const domino = new THREE.Mesh(dBox, dMat);
+           domino.rotation.y = Math.PI - angle;
+           domino.name = "domino_" + cnt;
+           cnt++;                                           //ドミノの番号
+           domino.castShadow = true;
+           domino.receiveShadow = true;
+           scene.add(domino);
+           dominos[domino.name] = domino;                   //配列dominosにドミノを保存
+           //ドミノ（物理用）を追加
+           const pDomino = new CANNON.Body({mass:1, material:pMat});    //ドミノは重力の影響を受ける
+           pDomino.addShape(pBox);
+           pDomino.quaternion.copy(domino.quaternion);                  //3D空間のドミノの位置と角度を物理ワールドにコピー
+           pDomino.position.copy(intersectObject.point);
+           pDomino.position.y += 1;                                     //ドミノは少し上から落ちてくる
+           pDomino.allowSleep = true;
+           world.addBody(pDomino);
+           pDominos[domino.name] = pDomino;
+       } else if (intersectObject.object.name.indexOf("domino") != -1) {    //クリックした物体がドミノだった時
+           //ドミノを倒す
+           const key = intersectObject.object.name;
+           const vx = -5 * Math.cos(angle);             //カメラの方向から力（速度）を与えてドミノを倒す
+           const vz = -5 * Math.sin(angle);
+           pDominos[key].wakeUp();
+           pDominos[key].velocity.set(vx, -5, vz);
+       }
+    }
+}
+
+const removeDomino = event => {     //画面を右クリックしたとき
+    //右クリック（ドミノを削除）
+    event.preventDefault();         //コンテクストメニューの表示をキャンセル
+    const intersectObject = getIntersectObject(event);
+    if ((intersectObject != undefined)
+       && (intersectObject.object.name.indexOf("domino") != -1)) {  //右クリックした物体がドミノだったとき
+       deleteDomino(intersectObject.object.name);                   //ドミノを削除
+    }
+}
+
+const deleteDomino = key => {
+    //ドミノ（表示用）を削除
+    scene.remove(dominos[key]);
+    dominos[key].material.dispose();
+    dominos[key].geometry.dispose();
+    delete dominos[key];
+    //ドミノ（物理用）を削除
+    world.removeBody(pDominos[key]);
+    delete pDominos[key]
+}
+
+const getIntersectObject = event => {
+    //マウス座標の変換
+    const mouse = new THREE.Vector2();
+    const rect = event.target.getBoundingClientRect();
+    mouse.x = (event.clientX - rect.left) / width * 2 - 1;
+    mouse.y = (event.clientY - rect.top) / height * (-2) + 1;
+    //レイキャストの作成
+    const raycaster = new THREE.Raycaster();                //カメラからマウス位置に向かう透明な線（レイキャスト）を作成
+    raycaster.setFromCamera(mouse, camera);
+    //先頭のオブジェクト情報を返す
+    return raycaster.intersectObjects(scene.children)[0];
+}
+
+const clearDomino = () => {     //クリアボタンを押したとき
+    //全てのドミノを削除
+    for (key in dominos) {
+        deleteDomino(key);
+    }
+}
+</script>
+</head>
+<body onload="init()">
+<p>ドミノ倒し</p>
+<input type="button" id="start" value="クリア" onclick="clearDomino()">
+[←][→]:カメラの回転　[↑][↓]:カメラの高さ移動<hr>
+<div id="renderArea"></div>
+</body>
+</html>
